@@ -66,7 +66,7 @@
         "default": false
     },
     "llm_recognition":{
-        "description": "用于识别输出语气模型（留空则使用当前会话默认模型）",
+        "description": "用于翻译日文并判断整句语气的模型（留空则使用当前会话默认模型）",
         "type": "string",
         "default": "",
         "_special": "select_provider"

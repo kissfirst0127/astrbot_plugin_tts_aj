@@ -1,3 +1,4 @@
+import json
 import random
 
 from pydantic import Field
@@ -155,13 +156,30 @@ class CloneTTSPlugin(Star):
                 umo = event.unified_msg_origin
                 provider_id = await self.context.get_current_chat_provider_id(umo=umo)
             llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id, # 聊天模型 ID
-                prompt=f"请根据句子你是一位精通语音合成（TTS）控制与情感表达的提示词工程师。你的任务是根据用户输入的句子“{llm_text}”，深度分析其语境、潜台词和情感流动，然后生成一组用于调整 AI 语音生成的“单句整体风格化”指令。输出一个指令字符串，旨在指导语音模型调整 语速、情绪、语气、音量、音感、音色**。1. **深度拆解**：分析句子的字面意思与深层含义（如：自嘲、反讽、压抑后的爆发、无奈的叹息等）。 2. **情感定位**：确定核心情绪基调（如：痛心、欢乐、骄傲、苦涩、挑衅）。 3. **动态规划**：判断句子内部是否有情绪转折（如：从前半句的平静到后半句的激动），如果有，需拆分为多条指令分别描述。 4. **指令生成**：将分析结果转化为用户示例中的自然语言指令格式。**必须**只输出一个字符串。 - **不要**输出任何分析过程、解释或额外的文字。 - 指令必须使用自然语言，模仿人类对配音演员的口吻（例如：“你可以用...语气吗？”，“...再...一点”，“嗓门再...点”）。 - 覆盖维度：确保生成的指令涵盖 **语速**、**情绪**、**语气**、**音量**、**音感** 中的五个维度。",
+                chat_provider_id=provider_id,
+                prompt=(
+                    "You prepare text for Japanese TTS. Translate the following Chinese "
+                    "reply into natural Japanese first. Then judge the tone of the entire "
+                    "Japanese sentence, including any emotional changes, and write one concise "
+                    "Japanese direction for the voice model covering speaking speed, emotion, "
+                    "tone, volume, and timbre. Return only a JSON object with the string keys "
+                    '"japanese_text" and "context_texts"; do not use Markdown. '
+                    f"Chinese reply: {llm_text}"
+                ),
             )
-            context_texts = llm_resp.completion_text
+            try:
+                tts_data = json.loads(llm_resp.completion_text)
+                japanese_text = str(tts_data["japanese_text"]).strip()
+                context_texts = str(tts_data["context_texts"]).strip()
+            except (json.JSONDecodeError, KeyError, TypeError):
+                logger.warning("Japanese translation or tone analysis returned invalid data")
+                return
+            if not japanese_text or not context_texts:
+                logger.warning("Japanese translation or tone analysis returned empty data")
+                return
             logger.debug(f"使用的语气风格: {context_texts}")
-            logger.info(f"正在合成克隆语音: {llm_text}")
-            audio_b64 = await tts_http_stream(self, llm_text,context_texts)
+            logger.info(f"正在合成日文克隆语音: {japanese_text}")
+            audio_b64 = await tts_http_stream(self, japanese_text, context_texts)
 
             if not audio_b64:
                 logger.warning("语音合成返回空数据，跳过本次语音回复")
@@ -171,7 +189,7 @@ class CloneTTSPlugin(Star):
             if result is None:
                 logger.warning("合成完成但 event result 已失效，跳过")
                 return
-            result.chain = [Comp.Record.fromBase64(audio_b64)]
+            result.chain.append(Comp.Record.fromBase64(audio_b64))
         except Exception as e:
             logger.error(f"Error in on_decorating_result: {e}")
 
@@ -207,21 +225,25 @@ class CloneTTSPlugin(Star):
 @dataclass
 class CloneTTSTool(FunctionTool[AstrAgentContext]):
     name: str = "clone_tts"  # 工具名称
-    description: str = "将文本转为语音发送的工具,当用户需要听到声音或者让你说话时候调用"  # 工具描述
+    description: str = "将中文文本转为日文语音发送。当用户需要听到声音或让你说话时，先翻译成自然日文，再判断完整日文句子的语气，最后调用本工具。"  # 工具描述
     parameters: dict = Field(
         default_factory=lambda: {
             "type": "object",
             "properties": {
                 "text": {
                     "type": "string",
-                    "description": "需要转换为语音的文本",
+                    "description": "要展示给用户的原始中文文本。",
+                },
+                "japanese_text": {
+                    "type": "string",
+                    "description": "将 text 翻译得到的自然日文，仅用于语音合成，不会展示给用户。",
                 },
                 "context_texts": {
                     "type": "string",
-                    "description": "根据需要转换为语音的文本，深度分析其语境、潜台词和情感流动，然后生成一组用于调整 AI 语音生成的“单句整体风格化”指令。输出一个输出一个指令字符串，旨在指导语音模型调整**语速、情绪/语气、音量、音感/音色**。1. **深度拆解**：分析句子的字面意思与深层含义（如：自嘲、反讽、压抑后的爆发、无奈的叹息等）。 2. **情感定位**：确定核心情绪基调（如：痛心、欢乐、骄傲、苦涩、挑衅）。 3. **动态规划**：判断句子内部是否有情绪转折（如：从前半句的平静到后半句的激动），如果有，需拆分为多条指令分别描述。 4. **指令生成**：将分析结果转化为用户示例中的自然语言指令格式。**必须**只输出一个字符串。 - **不要**输出任何分析过程、解释或额外的文字。 - 指令必须使用自然语言，模仿人类对配音演员的口吻（例如：“你可以用...语气吗？”，“...再...一点”，“嗓门再...点”）。 - 覆盖维度：确保生成的指令涵盖 **语速**、**情绪**、**语气**、**音量**、**音感** 中的五个维度。",
+                    "description": "基于整个 japanese_text 的语气判断生成的日文配音指令。须涵盖语速、情绪、语气、音量和音色；不要包含分析过程。",
                 },
             },
-            "required": ["text","context_texts"],
+            "required": ["text", "japanese_text", "context_texts"],
         }
     )
 
@@ -244,12 +266,19 @@ class CloneTTSTool(FunctionTool[AstrAgentContext]):
             return "LLM 工具未启用"
         if not text:
             return "文本不能为空"
+        japanese_text = kwargs.get("japanese_text")
+        if not japanese_text:
+            return "日文翻译不能为空"
         context_texts = kwargs.get("context_texts")
-        audio_b64 = await tts_http_stream(self.plugin, text,context_texts)
+        if not context_texts:
+            return "语气指令不能为空"
+        audio_b64 = await tts_http_stream(self.plugin, japanese_text, context_texts)
         if not audio_b64:
             return "语音合成失败"
         await context.context.event.send(
-            context.context.event.chain_result([Comp.Record.fromBase64(audio_b64)])
+            context.context.event.chain_result(
+                [Comp.Plain(text), Comp.Record.fromBase64(audio_b64)]
+            )
         )
         if not self.plugin.enable_llm_response:
             context.context.event.set_extra("voice_silence_mode", True)

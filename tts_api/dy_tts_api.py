@@ -28,7 +28,7 @@ async def tts_http_stream(self, text,context_texts):
             logger.warning(f"Invalid context_texts type: {type(context_texts)}, expected str or list.")
 
     additions_payload = {
-            "explicit_language": "zh-cn",
+            "explicit_language": "ja",
             "disable_markdown_filter": True,
             "enable_latex_tn": True,
         }
